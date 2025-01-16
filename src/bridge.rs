@@ -152,7 +152,7 @@ impl Bridge {
 
                 let mut buf = self.pool.get();
                 match self.tun.encapsulate(frame.payload(), buf.as_mut()) {
-                    TunnResult::Done => unreachable!(),
+                    TunnResult::Done => (),
                     TunnResult::Err(err) => bail!("wg encapsulate: {:?}", err),
                     TunnResult::WriteToNetwork(x) => {
                         let buf_len = x.len();
