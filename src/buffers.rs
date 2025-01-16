@@ -89,8 +89,6 @@ impl Pool {
     }
 
     pub fn available(&self) -> usize {
-        let len = self.inner.borrow().len();
-        let cap = self.inner.borrow().capacity();
-        cap - len
+        self.inner.borrow().len()
     }
 }

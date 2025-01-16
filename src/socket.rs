@@ -5,6 +5,7 @@ use std::os::fd::AsFd;
 use std::os::unix::net::UnixDatagram;
 
 use anyhow::Result;
+use log::warn;
 use nix::poll::{PollFd, PollFlags};
 
 use crate::buffers::{Buffer, Pool};
@@ -92,6 +93,7 @@ impl<T: Socket> BufferedSocket<T> {
                 Err(err) => panic!("recv: {}", err),
             }
         }
+        warn!("buffer pool exhausted, stopping recv");
     }
 
     pub fn poll_fd(&self, pool: &Pool) -> PollFd {
