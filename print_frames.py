@@ -4,23 +4,30 @@ import os
 import os.path
 import socket
 import sys
+import shutil
+import subprocess
 
 from scapy import all as scapy
 
-# qemu-system-x86_64 -m 512 -boot d -cdrom alpine-virt-3.19.1-x86_64.iso --accel kvm -netdev dgram,id=vpn,local.type=unix,local.path=local,remote.type=unix,remote.path=remote -device virtio-net-pci,netdev=vpn
+(here, there) = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
 
-send_socket_path = 'local'
-recv_socket_path = 'remote'
-if os.path.exists(recv_socket_path):
-    os.remove(recv_socket_path)
+qemu = subprocess.Popen(
+        [
+            shutil.which('qemu-system-x86_64'),
+            '-m', '512',
+            '-boot', 'd',
+            '-cdrom', sys.argv[1],
+            '--accel', 'kvm',
+            '-netdev', f'dgram,id=vpn,local.type=fd,local.str={there.fileno()}',
+            '-device', 'virtio-net-pci,netdev=vpn',
+        ],
+        pass_fds=[there.fileno()],
+)
+there.close()
+print(qemu.args)
 
-send_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-recv_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-recv_sock.bind(recv_socket_path)
-
-ready = False
 while True:
-	frame = scapy.Ether(recv_sock.recv(9001))
+	frame = scapy.Ether(here.recv(9001))
 	print(repr(frame))
 	print("")
 
@@ -40,5 +47,4 @@ while True:
 			hwdst="52:54:00:12:34:56",
 			pdst="192.168.100.100",
 		)))
-		send_sock.sendto(resp_bytes, send_socket_path)
-		ready = True
+		here.send(resp_bytes)
