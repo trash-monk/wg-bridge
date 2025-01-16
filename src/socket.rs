@@ -81,7 +81,7 @@ impl<T: Socket> BufferedSocket<T> {
     }
 
     fn batch_recv(&mut self, pool: &mut Pool) {
-        loop {
+        while pool.available() > 0 {
             let mut buf = pool.get();
             match self.inner.recv(buf.as_mut()) {
                 Ok(n) => {
@@ -94,8 +94,11 @@ impl<T: Socket> BufferedSocket<T> {
         }
     }
 
-    pub fn poll_fd(&self) -> PollFd {
-        let mut events = PollFlags::POLLIN;
+    pub fn poll_fd(&self, pool: &Pool) -> PollFd {
+        let mut events = PollFlags::empty();
+        if pool.available() > 0 {
+            events.insert(PollFlags::POLLIN)
+        }
         if !self.snd_buf.is_empty() {
             events.insert(PollFlags::POLLOUT)
         }

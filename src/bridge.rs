@@ -59,7 +59,7 @@ impl Bridge {
     }
 
     pub fn process(&mut self) -> Result<()> {
-        let mut poll_fds = [self.pipe.poll_fd(), self.sock.poll_fd()];
+        let mut poll_fds = [self.pipe.poll_fd(&self.pool), self.sock.poll_fd(&self.pool)];
         poll(&mut poll_fds, rand::random::<u16>() % 500 + 500).unwrap();
         let revents = [
             poll_fds[0].revents().unwrap(),
@@ -78,7 +78,7 @@ impl Bridge {
 
         let mut buf = self.pool.get();
         match self.tun.update_timers(buf.as_mut()) {
-            TunnResult::Done => {}
+            TunnResult::Done => (),
             TunnResult::Err(err) => panic!("wg: {:?}", err),
             TunnResult::WriteToNetwork(x) => {
                 trace!("wg timer send");

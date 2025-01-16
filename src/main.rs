@@ -41,14 +41,14 @@ fn main() -> ExitCode {
         .arg(
             Arg::new("bufsz")
                 .long("bufsz")
-                .default_value("9038")
+                .default_value("2048")
                 .value_parser(clap::value_parser!(u32))
                 .help("buffer size for sending/receiving packets"),
         )
         .arg(
             Arg::new("bufcnt")
                 .long("bufcnt")
-                .default_value("1024")
+                .default_value("16384")
                 .value_parser(clap::value_parser!(u32).range(1..))
                 .help("number of buffers (of size bufsz) to use"),
         )
