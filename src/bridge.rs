@@ -60,7 +60,7 @@ impl Bridge {
 
     pub fn process(&mut self) -> Result<()> {
         let mut poll_fds = [self.pipe.poll_fd(), self.sock.poll_fd()];
-        poll(&mut poll_fds, 567u16).unwrap();
+        poll(&mut poll_fds, rand::random::<u16>() % 500 + 500).unwrap();
         let revents = [
             poll_fds[0].revents().unwrap(),
             poll_fds[1].revents().unwrap(),

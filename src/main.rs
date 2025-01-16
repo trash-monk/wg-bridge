@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, TcpStream, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
 use std::os::{fd::AsRawFd, unix::net::UnixDatagram};
 use std::process::{Command, ExitCode};
 
@@ -11,6 +11,7 @@ use clap::{command, Arg, ArgAction, ArgGroup, Id};
 use log::{debug, info};
 use nix::fcntl::{fcntl, FcntlArg, FdFlag};
 use rand_core::{OsRng, RngCore};
+use serde::Deserialize;
 
 use bridge::Bridge;
 use buffers::Pool;
@@ -66,7 +67,7 @@ fn main() -> ExitCode {
 
     let (peer_addr, sock, tun) = match args.get_one::<Id>("cfg_source").unwrap().as_str() {
         "demo" => demo_config(),
-        "config" => todo!(),
+        "config" => load_config(args.get_one::<String>("config").unwrap()),
         _ => unreachable!(),
     };
 
@@ -147,6 +148,76 @@ fn demo_config() -> (IpAddr, BufferedSocket<UdpSocket>, Tunn) {
             PublicKey::from(peer_key),
             None,
             Some(25),
+            OsRng.next_u32(),
+            None,
+        )
+        .unwrap(),
+    )
+}
+
+#[derive(Deserialize, Debug)]
+struct Interface {
+    #[serde(rename = "PrivateKey")]
+    private_key: String,
+    #[serde(rename = "ListenPort")]
+    listen_port: Option<u16>,
+}
+
+#[derive(Deserialize, Debug)]
+struct Peer {
+    #[serde(rename = "PublicKey")]
+    public_key: String,
+    #[serde(rename = "PresharedKey")]
+    preshared_key: Option<String>,
+    #[serde(rename = "Endpoint")]
+    endpoint: String,
+    #[serde(rename = "PersistentKeepalive")]
+    persistent_keepalive: Option<u16>,
+}
+
+#[derive(Deserialize, Debug)]
+struct Config {
+    #[serde(rename = "Peer")]
+    peer: Peer,
+    #[serde(rename = "Interface")]
+    interface: Interface,
+}
+
+fn load_config(pth: &str) -> (IpAddr, BufferedSocket<UdpSocket>, Tunn) {
+    let cfg: Config = toml::from_str(&std::fs::read_to_string(pth).unwrap()).unwrap();
+    info!(cfg:?; "loaded config");
+
+    let mut buf = [0u8; 32];
+    BASE64_STANDARD
+        .decode_slice(cfg.interface.private_key, &mut buf)
+        .unwrap();
+    let sk = StaticSecret::from(buf);
+    BASE64_STANDARD
+        .decode_slice(cfg.peer.public_key, &mut buf)
+        .unwrap();
+    let pk = PublicKey::from(buf);
+    let psk = cfg.peer.preshared_key.map(|x| {
+        let mut buf = [0u8; 32];
+        BASE64_STANDARD.decode_slice(x, &mut buf).unwrap();
+        buf
+    });
+
+    let endpoint: SocketAddr = cfg.peer.endpoint.parse().unwrap();
+    let sock = UdpSocket::bind((
+        Ipv4Addr::UNSPECIFIED,
+        cfg.interface.listen_port.unwrap_or(0),
+    ))
+    .unwrap();
+    sock.connect(endpoint).unwrap();
+
+    (
+        endpoint.ip(),
+        BufferedSocket::new(sock).unwrap(),
+        Tunn::new(
+            sk,
+            pk,
+            psk,
+            cfg.peer.persistent_keepalive,
             OsRng.next_u32(),
             None,
         )
