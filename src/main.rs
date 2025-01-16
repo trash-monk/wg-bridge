@@ -1,25 +1,26 @@
-mod bridge;
-mod buffers;
-mod socket;
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, TcpStream, UdpSocket};
+use std::os::{fd::AsRawFd, unix::net::UnixDatagram};
+use std::process::{Command, ExitCode};
 
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use boringtun::noise::Tunn;
 use boringtun::x25519::{PublicKey, StaticSecret};
-use bridge::Bridge;
-use buffers::Pool;
 use clap::{command, Arg, ArgAction, ArgGroup, Id};
 use log::{debug, info};
 use nix::fcntl::{fcntl, FcntlArg, FdFlag};
 use rand_core::{OsRng, RngCore};
-use socket::BufferedSocket;
-use std::io::{Read, Write};
-use std::net::{Ipv4Addr, TcpStream, UdpSocket};
-use std::os::{fd::AsRawFd, unix::net::UnixDatagram};
-use std::process::{exit, Command, ExitCode};
-use std::thread;
 
-fn main() -> ExitCode{
+use bridge::Bridge;
+use buffers::Pool;
+use socket::BufferedSocket;
+
+mod bridge;
+mod buffers;
+mod socket;
+
+fn main() -> ExitCode {
     env_logger::init();
 
     let args = command!()
@@ -72,13 +73,13 @@ fn main() -> ExitCode{
     let (here, there) = UnixDatagram::pair().unwrap();
     fcntl(there.as_raw_fd(), FcntlArg::F_SETFD(FdFlag::empty())).unwrap();
 
-    let bufsz: usize = (*args.get_one::<u32>("bufsz").unwrap()).try_into().unwrap();
-    let bufcnt: usize = (*args.get_one::<u32>("bufcnt").unwrap())
+    let buf_sz: usize = (*args.get_one::<u32>("bufsz").unwrap()).try_into().unwrap();
+    let buf_cnt: usize = (*args.get_one::<u32>("bufcnt").unwrap())
         .try_into()
         .unwrap();
 
     let mut br = Bridge::new(
-        Pool::new(bufcnt, bufsz),
+        Pool::new(buf_cnt, buf_sz),
         BufferedSocket::new(here).unwrap(),
         sock,
         tun,
@@ -90,29 +91,31 @@ fn main() -> ExitCode{
         .map(|s| s.replace("{}", &there.as_raw_fd().to_string()))
         .collect();
 
-    info!(cmd:?; "running child command");
+    info!(cmd:?; "spawning child command");
     let mut child = Command::new(&cmd[0]).args(&cmd[1..]).spawn().unwrap();
-
-/*     thread::spawn(move || if let Some(x) = child.wait().unwrap().code() {
-        exit(x)
-    } else {
-        exit(123)
-    }); */
 
     loop {
         match br.process() {
             Ok(_) => (),
-            Err(x) => debug!(x:?; "invalid packet"),
+            Err(err) => debug!(err:?; "invalid packet"),
+        }
+
+        if let Some(x) = child.try_wait().unwrap() {
+            break x
+                .code()
+                .map(|i| ExitCode::from(i as u8))
+                .unwrap_or(ExitCode::FAILURE);
         }
     }
 }
 
 fn demo_config() -> (BufferedSocket<UdpSocket>, Tunn) {
+    let address = ("demo.wireguard.com", 42912);
     let sk = StaticSecret::random_from_rng(OsRng);
     let pk = PublicKey::from(&sk);
 
-    let mut conn = TcpStream::connect("demo.wireguard.com:42912").unwrap();
-    debug!("connected to demo server");
+    let mut conn = TcpStream::connect(address).unwrap();
+    info!(address:?; "connected to demo server");
 
     conn.write_fmt(format_args!("{}\n", BASE64_STANDARD.encode(pk)))
         .unwrap();
@@ -130,8 +133,10 @@ fn demo_config() -> (BufferedSocket<UdpSocket>, Tunn) {
     let mut peer_key = [0u8; 32];
     BASE64_STANDARD.decode_slice(cfg[1], &mut peer_key).unwrap();
 
+    let endpoint = (address.0, port);
+    info!(endpoint:?;"connecting to wg server");
     let sock = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
-    sock.connect(("demo.wireguard.com", port)).unwrap();
+    sock.connect(endpoint).unwrap();
 
     (
         BufferedSocket::new(sock).unwrap(),

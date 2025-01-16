@@ -1,3 +1,4 @@
+use std::fmt::{Debug, Formatter};
 use std::{cell::RefCell, cmp::min, rc::Rc};
 
 use log::info;
@@ -32,23 +33,42 @@ impl AsMut<[u8]> for Buffer {
     }
 }
 
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        self.pool.borrow_mut().push(self.inner.take().unwrap());
+    }
+}
+
+impl Debug for Buffer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Buffer")
+            .field("inner", &self.inner)
+            .field("cap", &self.cap)
+            .field("pool", &self.pool.as_ptr())
+            .finish()
+    }
+}
+
 pub struct Pool {
     inner: Rc<RefCell<Vec<Vec<u8>>>>,
     cap: usize,
 }
 
 impl Pool {
-    pub fn new(cnt: usize, bufsz: usize) -> Self {
-        info!(cnt,bufsz; "allocating buffer pool");
+    pub fn new(cnt: usize, buf_sz: usize) -> Self {
+        info!(cnt,buf_sz; "allocating buffer pool");
 
         let mut bufs = Vec::new();
         for _ in 0..cnt {
             let mut buf = Vec::new();
-            buf.reserve_exact(bufsz);
-            buf.resize(bufsz, 0);
+            buf.reserve_exact(buf_sz);
+            buf.resize(buf_sz, 0);
             bufs.push(buf);
         }
-        Self { inner: Rc::new(RefCell::new(bufs)), cap: bufsz }
+        Self {
+            inner: Rc::new(RefCell::new(bufs)),
+            cap: buf_sz,
+        }
     }
 
     pub fn get(&mut self) -> Buffer {

@@ -1,10 +1,11 @@
-use anyhow::Result;
-use nix::poll::{PollFd, PollFlags};
 use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::net::UdpSocket;
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixDatagram;
+
+use anyhow::Result;
+use nix::poll::{PollFd, PollFlags};
 
 use crate::buffers::{Buffer, Pool};
 
@@ -43,8 +44,8 @@ impl Socket for UdpSocket {
 }
 
 pub struct BufferedSocket<T: Socket> {
-    sndbuf: VecDeque<Buffer>,
-    rcvbuf: VecDeque<Buffer>,
+    snd_buf: VecDeque<Buffer>,
+    rcv_buf: VecDeque<Buffer>,
     inner: T,
 }
 
@@ -52,29 +53,29 @@ impl<T: Socket> BufferedSocket<T> {
     pub fn new(sock: T) -> Result<Self> {
         sock.set_nonblocking(true)?;
         Ok(Self {
-            sndbuf: VecDeque::new(),
-            rcvbuf: VecDeque::new(),
+            snd_buf: VecDeque::new(),
+            rcv_buf: VecDeque::new(),
             inner: sock,
         })
     }
 
     pub fn send(&mut self, buf: Buffer) {
-        self.sndbuf.push_back(buf)
+        self.snd_buf.push_back(buf)
     }
 
     pub fn recv(&mut self) -> Option<Buffer> {
-        self.rcvbuf.pop_front()
+        self.rcv_buf.pop_front()
     }
 
-    fn batch_send(&mut self, pool: &mut Pool) {
-        while let Some(buf) = self.sndbuf.pop_front() {
+    fn batch_send(&mut self) {
+        while let Some(buf) = self.snd_buf.pop_front() {
             match self.inner.send(buf.as_ref()) {
-                Ok(_) => (),
+                Ok(_) => continue,
                 Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-                    self.sndbuf.push_front(buf);
+                    self.snd_buf.push_front(buf);
                     return;
                 }
-                Err(e) => panic!("send: {}", e),
+                Err(err) => panic!("send: {}", err),
             }
         }
     }
@@ -85,30 +86,27 @@ impl<T: Socket> BufferedSocket<T> {
             match self.inner.recv(buf.as_mut()) {
                 Ok(n) => {
                     buf.truncate(n);
-                    self.rcvbuf.push_back(buf);
+                    self.rcv_buf.push_back(buf);
                 }
-                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-                    return;
-                }
-                Err(e) => panic!("recv: {}", e),
+                Err(ref e) if e.kind() == ErrorKind::WouldBlock => return,
+                Err(err) => panic!("recv: {}", err),
             }
         }
     }
 
-    pub fn poll_fd(&self, pool: &Pool) -> PollFd {
-        let mut events = PollFlags::empty();
-            events.insert(PollFlags::POLLIN);
-        if !self.sndbuf.is_empty() {
+    pub fn poll_fd(&self) -> PollFd {
+        let mut events = PollFlags::POLLIN;
+        if !self.snd_buf.is_empty() {
             events.insert(PollFlags::POLLOUT)
         }
         PollFd::new(self.inner.as_fd(), events)
     }
 
-    pub fn handle(&mut self, pool: &mut Pool, revents: &PollFlags) {
+    pub fn batch_io(&mut self, pool: &mut Pool, revents: &PollFlags) {
         for bit in revents.iter() {
             match bit {
                 PollFlags::POLLIN => self.batch_recv(pool),
-                PollFlags::POLLOUT => self.batch_send(pool),
+                PollFlags::POLLOUT => self.batch_send(),
                 x => panic!("poll event: {:?}", x),
             }
         }
