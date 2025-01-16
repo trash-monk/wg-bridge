@@ -1,4 +1,3 @@
-use std::fmt::{Debug, Formatter};
 use std::{cell::RefCell, cmp::min, rc::Rc};
 
 use log::info;
@@ -38,17 +37,6 @@ impl Drop for Buffer {
         self.pool.borrow_mut().push(self.inner.take().unwrap());
     }
 }
-
-impl Debug for Buffer {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Buffer")
-            .field("inner", &self.inner)
-            .field("cap", &self.cap)
-            .field("pool", &self.pool.as_ptr())
-            .finish()
-    }
-}
-
 pub struct Pool {
     inner: Rc<RefCell<Vec<Vec<u8>>>>,
     cap: usize,

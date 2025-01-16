@@ -1,13 +1,14 @@
-use std::net::UdpSocket;
+use std::net::{IpAddr, UdpSocket};
 use std::os::unix::net::UnixDatagram;
 
-use anyhow::{bail, Ok, Result};
+use anyhow::{bail, Result};
 use boringtun::noise::{Tunn, TunnResult};
 use log::{debug, trace};
-use nix::poll::{poll, PollTimeout};
+use nix::poll::poll;
+use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::{
     ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, EthernetProtocol,
-    EthernetRepr, Ipv4Address, Ipv6Address,
+    EthernetRepr, Ipv4Address, Ipv4Packet, Ipv4Repr, Ipv6Address, Ipv6Packet, Ipv6Repr,
 };
 
 use crate::buffers::{Buffer, Pool};
@@ -19,6 +20,7 @@ pub struct Bridge {
     sock: BufferedSocket<UdpSocket>,
     tun: Tunn,
     mac: Option<EthernetAddress>,
+    peer: IpAddr,
 }
 
 fn fake_mac(addr: Ipv4Address) -> EthernetAddress {
@@ -31,6 +33,7 @@ impl Bridge {
         pipe: BufferedSocket<UnixDatagram>,
         mut sock: BufferedSocket<UdpSocket>,
         mut tun: Tunn,
+        peer: IpAddr,
     ) -> Self {
         let mut buf = pool.get();
         let handshake_init = match tun.format_handshake_initiation(buf.as_mut(), false) {
@@ -42,7 +45,7 @@ impl Bridge {
         };
         let handshake_len = handshake_init.len();
         buf.truncate(handshake_len);
-        trace!(buf:?; "handshake init");
+        debug!("wg handshake");
         sock.send(buf);
 
         Self {
@@ -50,13 +53,14 @@ impl Bridge {
             pipe,
             sock,
             tun,
+            peer,
             mac: None,
         }
     }
 
     pub fn process(&mut self) -> Result<()> {
         let mut poll_fds = [self.pipe.poll_fd(), self.sock.poll_fd()];
-        poll(&mut poll_fds, PollTimeout::NONE).unwrap();
+        poll(&mut poll_fds, 567u16).unwrap();
         let revents = [
             poll_fds[0].revents().unwrap(),
             poll_fds[1].revents().unwrap(),
@@ -77,6 +81,7 @@ impl Bridge {
             TunnResult::Done => {}
             TunnResult::Err(err) => panic!("wg: {:?}", err),
             TunnResult::WriteToNetwork(x) => {
+                trace!("wg timer send");
                 let buf_len = x.len();
                 buf.truncate(buf_len);
                 self.sock.send(buf);
@@ -89,19 +94,19 @@ impl Bridge {
     }
 
     fn handle_sock(&mut self, mut pkt: Buffer) -> Result<()> {
-        trace!(pkt:?; "recv sock");
-
         let mut queued = false;
         loop {
             let mut buf = self.pool.get();
-            // TODO fill in src_addr?
-            match self.tun.decapsulate(None, pkt.as_ref(), buf.as_mut()) {
+            match self
+                .tun
+                .decapsulate(Some(self.peer), pkt.as_ref(), buf.as_mut())
+            {
                 TunnResult::Done => (),
                 TunnResult::Err(err) => bail!("wg decapsulate: {:?}", err),
                 TunnResult::WriteToNetwork(x) => {
                     let buf_len = x.len();
                     buf.truncate(buf_len);
-                    trace!(buf:?; "queued sock send");
+                    trace!("wg queued send");
                     self.sock.send(buf);
                     queued = true;
                     pkt.truncate(0);
@@ -132,8 +137,6 @@ impl Bridge {
     }
 
     fn handle_pipe(&mut self, pkt: Buffer) -> Result<()> {
-        trace!(pkt:?; "recv pipe");
-
         let frame = EthernetFrame::new_checked(&pkt)?;
         match frame.ethertype() {
             EthernetProtocol::Arp => self.handle_arp(
@@ -141,6 +144,12 @@ impl Bridge {
                 pkt,
             )?,
             EthernetProtocol::Ipv4 => {
+                let repr = Ipv4Repr::parse(
+                    &Ipv4Packet::new_checked(frame.payload())?,
+                    &ChecksumCapabilities::default(),
+                );
+                trace!(repr:?; "<-ipv4");
+
                 let mut buf = self.pool.get();
                 match self.tun.encapsulate(frame.payload(), buf.as_mut()) {
                     TunnResult::Done => unreachable!(),
@@ -148,7 +157,6 @@ impl Bridge {
                     TunnResult::WriteToNetwork(x) => {
                         let buf_len = x.len();
                         buf.truncate(buf_len);
-                        trace!(buf:?; "encrypted ipv4");
                         self.sock.send(buf);
                     }
                     TunnResult::WriteToTunnelV4(_, _) => unreachable!(),
@@ -156,10 +164,11 @@ impl Bridge {
                 }
             }
             EthernetProtocol::Ipv6 => {
-                trace!("drop lan ipv6");
+                let repr = Ipv6Repr::parse(&Ipv6Packet::new_checked(frame.payload())?);
+                debug!(repr:?; "<-ipv6 drop");
             }
             EthernetProtocol::Unknown(x) => {
-                debug!(ethertype=x; "drop lan unknown");
+                debug!(ethertype=x; "<-??? drop");
             }
         }
 
@@ -197,6 +206,7 @@ impl Bridge {
                     dst_addr: source_hardware_addr,
                     ethertype: EthernetProtocol::Arp,
                 };
+                trace!(hdr:?, reply:?; "arp reply");
 
                 buf.reset();
                 let mut packet = EthernetFrame::new_checked(buf.as_mut()).unwrap();
@@ -205,7 +215,6 @@ impl Bridge {
                 hdr.emit(&mut packet);
                 buf.truncate(hdr.buffer_len() + reply.buffer_len());
 
-                trace!(buf:?; "arp reply");
                 self.pipe.send(buf);
             }
             x => bail!("unexpected arp packet: {:?}", x),
@@ -215,6 +224,12 @@ impl Bridge {
     }
 
     fn handle_ipv4(&mut self, src: Ipv4Address, mut pkt: Buffer) -> Result<()> {
+        let repr = Ipv4Repr::parse(
+            &Ipv4Packet::new_checked(pkt.as_ref())?,
+            &ChecksumCapabilities::default(),
+        );
+        trace!(src:?,repr:?; "->ipv4");
+
         let dst = if let Some(x) = self.mac {
             x
         } else {
@@ -234,13 +249,13 @@ impl Bridge {
         hdr.emit(&mut packet);
         pkt.truncate(hdr.buffer_len() + payload_len);
 
-        trace!(pkt:?; "tun ipv4");
         self.pipe.send(pkt);
         Ok(())
     }
 
     fn handle_ipv6(&mut self, dst: Ipv6Address, pkt: Buffer) -> Result<()> {
-        trace!(dst:?, pkt:?; "drop tun ipv6");
+        let repr = Ipv6Repr::parse(&Ipv6Packet::new_checked(pkt.as_ref())?);
+        debug!(dst:?, repr:?; "->ipv6 drop");
         Ok(())
     }
 }

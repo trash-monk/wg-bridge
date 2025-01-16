@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, TcpStream, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, TcpStream, UdpSocket};
 use std::os::{fd::AsRawFd, unix::net::UnixDatagram};
 use std::process::{Command, ExitCode};
 
@@ -64,7 +64,7 @@ fn main() -> ExitCode {
         )
         .get_matches();
 
-    let (sock, tun) = match args.get_one::<Id>("cfg_source").unwrap().as_str() {
+    let (peer_addr, sock, tun) = match args.get_one::<Id>("cfg_source").unwrap().as_str() {
         "demo" => demo_config(),
         "config" => todo!(),
         _ => unreachable!(),
@@ -83,6 +83,7 @@ fn main() -> ExitCode {
         BufferedSocket::new(here).unwrap(),
         sock,
         tun,
+        peer_addr,
     );
 
     let cmd: Vec<_> = args
@@ -109,7 +110,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn demo_config() -> (BufferedSocket<UdpSocket>, Tunn) {
+fn demo_config() -> (IpAddr, BufferedSocket<UdpSocket>, Tunn) {
     let address = ("demo.wireguard.com", 42912);
     let sk = StaticSecret::random_from_rng(OsRng);
     let pk = PublicKey::from(&sk);
@@ -139,6 +140,7 @@ fn demo_config() -> (BufferedSocket<UdpSocket>, Tunn) {
     sock.connect(endpoint).unwrap();
 
     (
+        conn.peer_addr().unwrap().ip(),
         BufferedSocket::new(sock).unwrap(),
         Tunn::new(
             sk,
