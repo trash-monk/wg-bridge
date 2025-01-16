@@ -64,14 +64,25 @@ impl Bridge {
         self.pipe.batch_io(&mut self.pool, &revents[0]);
         self.sock.batch_io(&mut self.pool, &revents[1]);
 
-        // todo timers
-
         while let Some(pkt) = self.pipe.recv() {
             self.handle_pipe(pkt)?;
         }
 
         while let Some(pkt) = self.sock.recv() {
             self.handle_sock(pkt)?;
+        }
+
+        let mut buf = self.pool.get();
+        match self.tun.update_timers(buf.as_mut()) {
+            TunnResult::Done => {}
+            TunnResult::Err(err) => panic!("wg: {:?}", err),
+            TunnResult::WriteToNetwork(x) => {
+                let buf_len = x.len();
+                buf.truncate(buf_len);
+                self.sock.send(buf);
+            }
+            TunnResult::WriteToTunnelV4(_, _) => unreachable!(),
+            TunnResult::WriteToTunnelV6(_, _) => unreachable!(),
         }
 
         Ok(())
@@ -221,7 +232,7 @@ impl Bridge {
         pkt.as_mut().copy_within(0..payload_len, hdr.buffer_len());
         let mut packet = EthernetFrame::new_checked(pkt.as_mut()).unwrap();
         hdr.emit(&mut packet);
-        pkt.truncate(hdr.buffer_len() + pkt.as_ref().len());
+        pkt.truncate(hdr.buffer_len() + payload_len);
 
         trace!(pkt:?; "tun ipv4");
         self.pipe.send(pkt);
