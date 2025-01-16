@@ -69,7 +69,7 @@ impl<T: Socket> BufferedSocket<T> {
     fn batch_send(&mut self, pool: &mut Pool) {
         while let Some(buf) = self.sndbuf.pop_front() {
             match self.inner.send(buf.as_ref()) {
-                Ok(_) => pool.put(buf),
+                Ok(_) => (),
                 Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
                     self.sndbuf.push_front(buf);
                     return;
@@ -80,14 +80,14 @@ impl<T: Socket> BufferedSocket<T> {
     }
 
     fn batch_recv(&mut self, pool: &mut Pool) {
-        while let Some(mut buf) = pool.get() {
+        loop {
+            let mut buf = pool.get();
             match self.inner.recv(buf.as_mut()) {
                 Ok(n) => {
                     buf.truncate(n);
                     self.rcvbuf.push_back(buf);
                 }
                 Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-                    pool.put(buf);
                     return;
                 }
                 Err(e) => panic!("recv: {}", e),
@@ -97,9 +97,7 @@ impl<T: Socket> BufferedSocket<T> {
 
     pub fn poll_fd(&self, pool: &Pool) -> PollFd {
         let mut events = PollFlags::empty();
-        if !pool.is_empty() {
             events.insert(PollFlags::POLLIN);
-        }
         if !self.sndbuf.is_empty() {
             events.insert(PollFlags::POLLOUT)
         }

@@ -30,7 +30,7 @@ impl Bridge {
         mut sock: BufferedSocket<UdpSocket>,
         mut tun: Tunn,
     ) -> Self {
-        let mut buf = pool.get().unwrap();
+        let mut buf = pool.get();
         let handshake_init = match tun.format_handshake_initiation(buf.as_mut(), false) {
             TunnResult::Done => unreachable!(),
             TunnResult::Err(x) => panic!("handshake failed: {:?}", x),
@@ -40,7 +40,7 @@ impl Bridge {
         };
         let handshake_len = handshake_init.len();
         buf.truncate(handshake_len);
-        trace!(buf:?; "handshake init");
+        //trace!(buf:?; "handshake init");
         sock.send(buf);
 
         Self {
@@ -60,7 +60,7 @@ impl Bridge {
         self.sock.handle(&mut self.pool, &revents[1]);
 
         while let Some(pkt) = self.pipe.recv() {
-            trace!(pkt:?; "recv pipe");
+            //trace!(pkt:?; "recv pipe");
 
             let frame = EthernetFrame::new_checked(&pkt)?;
             match frame.ethertype() {
@@ -69,7 +69,7 @@ impl Bridge {
                     pkt,
                 ),
                 EthernetProtocol::Ipv4 => {
-                    let mut buf = self.pool.get().unwrap();
+                    let mut buf = self.pool.get();
                     match self.tun.encapsulate(frame.payload(), buf.as_mut()) {
                         TunnResult::Done => unreachable!(),
                         TunnResult::Err(x) => panic!("decapsulate: {:?}", x),
@@ -81,33 +81,30 @@ impl Bridge {
                         TunnResult::WriteToTunnelV4(_, _) => unreachable!(),
                         TunnResult::WriteToTunnelV6(_, _) => unreachable!(),
                     }
-                    self.pool.put(pkt);
                 }
                 EthernetProtocol::Ipv6 => {
                     trace!("drop lan ipv6");
-                    self.pool.put(pkt);
                 }
                 EthernetProtocol::Unknown(x) => {
                     debug!(ethertype=x; "drop lan unknown");
-                    self.pool.put(pkt);
                 }
             }
         }
 
         while let Some(mut pkt) = self.sock.recv() {
-            trace!(pkt:?; "recv sock");
+            //trace!(pkt:?; "recv sock");
 
             let mut queued = false;
             loop {
-                let mut buf = self.pool.get().unwrap();
+                let mut buf = self.pool.get();
                 // TODO fill in src_addr?
                 match self.tun.decapsulate(None, pkt.as_ref(), buf.as_mut()) {
-                    TunnResult::Done => self.pool.put(buf),
+                    TunnResult::Done => (),
                     TunnResult::Err(x) => panic!("decapsulate: {:?}", x),
                     TunnResult::WriteToNetwork(x) => {
                         let buf_len = x.len();
                         buf.truncate(buf_len);
-                        trace!(buf:?; "queued sock send");
+                        //trace!(buf:?; "queued sock send");
                         self.sock.send(buf);
                         queued = true;
                         pkt.truncate(0);
@@ -133,7 +130,6 @@ impl Bridge {
                     }
                 }
 
-                self.pool.put(pkt);
                 break;
             }
         }
@@ -149,7 +145,6 @@ impl Bridge {
                 ..
             } => {
                 debug!(op=x;"unknown arp operation");
-                self.pool.put(buf);
             }
             ArpRepr::EthernetIpv4 {
                 operation: ArpOperation::Request,
@@ -181,7 +176,7 @@ impl Bridge {
                 hdr.emit(&mut packet);
                 buf.truncate(hdr.buffer_len() + reply.buffer_len());
 
-                trace!(buf:?; "arp reply");
+                //trace!(buf:?; "arp reply");
                 self.pipe.send(buf);
             }
             _ => debug!("unexpected arp packet"),
@@ -193,7 +188,6 @@ impl Bridge {
             x
         } else {
             trace!("destination mac not set, dropping packet");
-            self.pool.put(buf);
             return;
         };
 
@@ -203,7 +197,7 @@ impl Bridge {
             ethertype: EthernetProtocol::Ipv4,
         };
 
-        let mut pkt = self.pool.get().unwrap();
+        let mut pkt = self.pool.get();
         let mut packet = EthernetFrame::new_checked(pkt.as_mut()).unwrap();
         for i in 0..buf.as_ref().len() {
             packet.payload_mut()[i] = buf.as_ref()[i];
@@ -211,13 +205,11 @@ impl Bridge {
         hdr.emit(&mut packet);
         pkt.truncate(hdr.buffer_len() + buf.as_ref().len());
 
-        trace!(pkt:?; "tun ipv4");
+        //trace!(pkt:?; "tun ipv4");
         self.pipe.send(pkt);
-        self.pool.put(buf);
     }
 
     fn handle_ipv6(&mut self, dst: Ipv6Address, buf: Buffer) {
         trace!(dst:?; "drop tun ipv6");
-        self.pool.put(buf);
     }
 }

@@ -16,10 +16,10 @@ use socket::BufferedSocket;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpStream, UdpSocket};
 use std::os::{fd::AsRawFd, unix::net::UnixDatagram};
-use std::process::{Command, ExitCode};
+use std::process::{exit, Command, ExitCode};
 use std::thread;
 
-fn main() -> ExitCode {
+fn main() -> ExitCode{
     env_logger::init();
 
     let args = command!()
@@ -93,17 +93,17 @@ fn main() -> ExitCode {
     info!(cmd:?; "running child command");
     let mut child = Command::new(&cmd[0]).args(&cmd[1..]).spawn().unwrap();
 
-    thread::spawn(move || loop {
+/*     thread::spawn(move || if let Some(x) = child.wait().unwrap().code() {
+        exit(x)
+    } else {
+        exit(123)
+    }); */
+
+    loop {
         match br.process() {
             Ok(_) => (),
             Err(x) => debug!(x:?; "invalid packet"),
         }
-    });
-
-    if let Some(x) = child.wait().unwrap().code() {
-        ExitCode::from(x as u8)
-    } else {
-        ExitCode::FAILURE
     }
 }
 
