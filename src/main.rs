@@ -28,7 +28,6 @@ fn main() -> ! {
             Arg::new("config")
                 .long("config")
                 .short('c')
-                .value_parser(clap::value_parser!(String))
                 .help("use the given config file, in the format of `wg setconf`"),
         )
         .arg(
@@ -54,7 +53,6 @@ fn main() -> ! {
         .arg(
             Arg::new("socket")
                 .required(true)
-                .value_parser(clap::value_parser!(String))
                 .help("path to server socket for QEMU to connect to"),
         )
         .group(
