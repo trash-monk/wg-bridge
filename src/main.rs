@@ -1,7 +1,7 @@
-use std::io::{Read, Write};
+use std::fs;
+use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
-use std::os::{fd::AsRawFd, unix::net::UnixDatagram};
-use std::process::{Command, ExitCode};
+use std::os::unix::net::UnixDatagram;
 
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
@@ -9,7 +9,6 @@ use boringtun::noise::Tunn;
 use boringtun::x25519::{PublicKey, StaticSecret};
 use clap::{command, Arg, ArgAction, ArgGroup, Id};
 use log::{debug, info};
-use nix::fcntl::{fcntl, FcntlArg, FdFlag};
 use rand_core::{OsRng, RngCore};
 use serde::Deserialize;
 
@@ -21,7 +20,7 @@ mod bridge;
 mod buffers;
 mod socket;
 
-fn main() -> ExitCode {
+fn main() -> ! {
     env_logger::init();
 
     let args = command!()
@@ -53,10 +52,10 @@ fn main() -> ExitCode {
                 .help("number of buffers (of size bufsz) to use"),
         )
         .arg(
-            Arg::new("cmd")
-                .num_args(1..)
-                .trailing_var_arg(true)
-                .help("command to run"),
+            Arg::new("socket")
+                .required(true)
+                .value_parser(clap::value_parser!(String))
+                .help("path to server socket for QEMU to connect to"),
         )
         .group(
             ArgGroup::new("cfg_source")
@@ -65,48 +64,37 @@ fn main() -> ExitCode {
         )
         .get_matches();
 
+    let socket_path = args.get_one::<String>("socket").unwrap();
+    let buf_sz: usize = (*args.get_one::<u32>("bufsz").unwrap()).try_into().unwrap();
+    let buf_cnt: usize = (*args.get_one::<u32>("bufcnt").unwrap())
+        .try_into()
+        .unwrap();
+
     let (peer_addr, sock, tun) = match args.get_one::<Id>("cfg_source").unwrap().as_str() {
         "demo" => demo_config(),
         "config" => load_config(args.get_one::<String>("config").unwrap()),
         _ => unreachable!(),
     };
 
-    let (here, there) = UnixDatagram::pair().unwrap();
-    fcntl(there.as_raw_fd(), FcntlArg::F_SETFD(FdFlag::empty())).unwrap();
-
-    let buf_sz: usize = (*args.get_one::<u32>("bufsz").unwrap()).try_into().unwrap();
-    let buf_cnt: usize = (*args.get_one::<u32>("bufcnt").unwrap())
-        .try_into()
-        .unwrap();
+    match fs::remove_file(socket_path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(e) => Err(e).unwrap(),
+    }
+    let uds = UnixDatagram::bind(socket_path).unwrap();
 
     let mut br = Bridge::new(
         Pool::new(buf_cnt, buf_sz),
-        BufferedSocket::new(here).unwrap(),
+        BufferedSocket::new(uds).unwrap(),
         sock,
         tun,
         peer_addr,
     );
 
-    let cmd: Vec<_> = args
-        .get_many::<String>("cmd")
-        .unwrap()
-        .map(|s| s.replace("{}", &there.as_raw_fd().to_string()))
-        .collect();
-
-    info!(cmd:?; "spawning child command");
-    let mut child = Command::new(&cmd[0]).args(&cmd[1..]).spawn().unwrap();
-
     loop {
         match br.process() {
             Ok(_) => (),
             Err(err) => debug!(err:?; "invalid packet"),
-        }
-
-        if let Some(x) = child.try_wait().unwrap() {
-            break x
-                .code()
-                .map(|i| ExitCode::from(i as u8))
-                .unwrap_or(ExitCode::FAILURE);
         }
     }
 }
