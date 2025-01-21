@@ -39,14 +39,14 @@ fn main() -> ! {
         .arg(
             Arg::new("bufsz")
                 .long("bufsz")
-                .default_value("2048")
+                .default_value("8192")
                 .value_parser(clap::value_parser!(u32))
                 .help("buffer size for sending/receiving packets"),
         )
         .arg(
             Arg::new("bufcnt")
                 .long("bufcnt")
-                .default_value("16384")
+                .default_value("65536")
                 .value_parser(clap::value_parser!(u32).range(1..))
                 .help("number of buffers (of size bufsz) to use"),
         )
