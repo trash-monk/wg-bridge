@@ -1,24 +1,24 @@
+use anyhow::Result;
+use log::warn;
+use nix::poll::{PollFd, PollFlags};
 use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::net::UdpSocket;
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixDatagram;
-
-use anyhow::Result;
-use log::warn;
-use nix::poll::{PollFd, PollFlags};
+use std::path::PathBuf;
 
 use crate::buffers::{Buffer, Pool};
 
 pub trait Socket: AsFd {
-    fn send(&self, buf: &[u8]) -> std::io::Result<usize>;
+    fn send(&self, buf: &[u8], dst: &Option<PathBuf>) -> std::io::Result<usize>;
     fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize>;
     fn set_nonblocking(&self, nonblocking: bool) -> std::io::Result<()>;
 }
 
 impl Socket for UnixDatagram {
-    fn send(&self, buf: &[u8]) -> std::io::Result<usize> {
-        self.send(buf)
+    fn send(&self, buf: &[u8], dst: &Option<PathBuf>) -> std::io::Result<usize> {
+        self.send_to(buf, dst.as_ref().unwrap())
     }
 
     fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -31,7 +31,7 @@ impl Socket for UnixDatagram {
 }
 
 impl Socket for UdpSocket {
-    fn send(&self, buf: &[u8]) -> std::io::Result<usize> {
+    fn send(&self, buf: &[u8], _: &Option<PathBuf>) -> std::io::Result<usize> {
         self.send(buf)
     }
 
@@ -48,15 +48,17 @@ pub struct BufferedSocket<T: Socket> {
     snd_buf: VecDeque<Buffer>,
     rcv_buf: VecDeque<Buffer>,
     inner: T,
+    dst: Option<PathBuf>,
 }
 
 impl<T: Socket> BufferedSocket<T> {
-    pub fn new(sock: T) -> Result<Self> {
+    pub fn new(sock: T, dst: Option<PathBuf>) -> Result<Self> {
         sock.set_nonblocking(true)?;
         Ok(Self {
             snd_buf: VecDeque::new(),
             rcv_buf: VecDeque::new(),
             inner: sock,
+            dst,
         })
     }
 
@@ -70,7 +72,7 @@ impl<T: Socket> BufferedSocket<T> {
 
     fn batch_send(&mut self) {
         while let Some(buf) = self.snd_buf.pop_front() {
-            match self.inner.send(buf.as_ref()) {
+            match self.inner.send(buf.as_ref(), &self.dst) {
                 Ok(_) => continue,
                 Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
                     self.snd_buf.push_front(buf);

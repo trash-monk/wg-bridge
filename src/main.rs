@@ -51,9 +51,14 @@ fn main() -> ! {
                 .help("number of buffers (of size bufsz) to use"),
         )
         .arg(
-            Arg::new("socket")
+            Arg::new("listen")
                 .required(true)
-                .help("path to server socket for QEMU to connect to"),
+                .help("path to server socket to bind"),
+        )
+        .arg(
+            Arg::new("connect")
+                .required(true)
+                .help("path to QEMU's server socket"),
         )
         .group(
             ArgGroup::new("cfg_source")
@@ -62,7 +67,8 @@ fn main() -> ! {
         )
         .get_matches();
 
-    let socket_path = args.get_one::<String>("socket").unwrap();
+    let listen_path = args.get_one::<String>("listen").unwrap();
+    let connect_path = args.get_one::<String>("connect").unwrap();
     let buf_sz: usize = (*args.get_one::<u32>("bufsz").unwrap()).try_into().unwrap();
     let buf_cnt: usize = (*args.get_one::<u32>("bufcnt").unwrap())
         .try_into()
@@ -74,16 +80,18 @@ fn main() -> ! {
         _ => unreachable!(),
     };
 
-    match fs::remove_file(socket_path) {
+    match fs::remove_file(listen_path) {
         Ok(_) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {}
         Err(e) => Err(e).unwrap(),
     }
-    let uds = UnixDatagram::bind(socket_path).unwrap();
+    let rx = UnixDatagram::bind(listen_path).unwrap();
+    let tx = UnixDatagram::unbound().unwrap();
 
     let mut br = Bridge::new(
         Pool::new(buf_cnt, buf_sz),
-        BufferedSocket::new(uds).unwrap(),
+        BufferedSocket::new(rx, None).unwrap(),
+        BufferedSocket::new(tx, Some(connect_path.into())).unwrap(),
         sock,
         tun,
         peer_addr,
@@ -128,7 +136,7 @@ fn demo_config() -> (IpAddr, BufferedSocket<UdpSocket>, Tunn) {
 
     (
         conn.peer_addr().unwrap().ip(),
-        BufferedSocket::new(sock).unwrap(),
+        BufferedSocket::new(sock, None).unwrap(),
         Tunn::new(
             sk,
             PublicKey::from(peer_key),
@@ -198,7 +206,7 @@ fn load_config(pth: &str) -> (IpAddr, BufferedSocket<UdpSocket>, Tunn) {
 
     (
         endpoint.ip(),
-        BufferedSocket::new(sock).unwrap(),
+        BufferedSocket::new(sock, None).unwrap(),
         Tunn::new(
             sk,
             pk,

@@ -16,7 +16,8 @@ use crate::socket::BufferedSocket;
 
 pub struct Bridge {
     pool: Pool,
-    pipe: BufferedSocket<UnixDatagram>,
+    rx: BufferedSocket<UnixDatagram>,
+    tx: BufferedSocket<UnixDatagram>,
     sock: BufferedSocket<UdpSocket>,
     tun: Tunn,
     mac: Option<EthernetAddress>,
@@ -30,7 +31,8 @@ fn fake_mac(addr: Ipv4Address) -> EthernetAddress {
 impl Bridge {
     pub fn new(
         mut pool: Pool,
-        pipe: BufferedSocket<UnixDatagram>,
+        rx: BufferedSocket<UnixDatagram>,
+        tx: BufferedSocket<UnixDatagram>,
         mut sock: BufferedSocket<UdpSocket>,
         mut tun: Tunn,
         peer: IpAddr,
@@ -50,7 +52,8 @@ impl Bridge {
 
         Self {
             pool,
-            pipe,
+            rx,
+            tx,
             sock,
             tun,
             peer,
@@ -59,16 +62,22 @@ impl Bridge {
     }
 
     pub fn process(&mut self) -> Result<()> {
-        let mut poll_fds = [self.pipe.poll_fd(&self.pool), self.sock.poll_fd(&self.pool)];
+        let mut poll_fds = [
+            self.rx.poll_fd(&self.pool),
+            self.tx.poll_fd(&self.pool),
+            self.sock.poll_fd(&self.pool),
+        ];
         poll(&mut poll_fds, rand::random::<u16>() % 500 + 500).unwrap();
         let revents = [
             poll_fds[0].revents().unwrap(),
             poll_fds[1].revents().unwrap(),
+            poll_fds[2].revents().unwrap(),
         ];
-        self.pipe.batch_io(&mut self.pool, &revents[0]);
-        self.sock.batch_io(&mut self.pool, &revents[1]);
+        self.rx.batch_io(&mut self.pool, &revents[0]);
+        self.tx.batch_io(&mut self.pool, &revents[1]);
+        self.sock.batch_io(&mut self.pool, &revents[2]);
 
-        while let Some(pkt) = self.pipe.recv() {
+        while let Some(pkt) = self.rx.recv() {
             self.handle_pipe(pkt)?;
         }
 
@@ -215,7 +224,7 @@ impl Bridge {
                 hdr.emit(&mut packet);
                 buf.truncate(hdr.buffer_len() + reply.buffer_len());
 
-                self.pipe.send(buf);
+                self.tx.send(buf);
             }
             x => bail!("unexpected arp packet: {:?}", x),
         }
@@ -249,7 +258,7 @@ impl Bridge {
         hdr.emit(&mut packet);
         pkt.truncate(hdr.buffer_len() + payload_len);
 
-        self.pipe.send(pkt);
+        self.tx.send(pkt);
         Ok(())
     }
 
