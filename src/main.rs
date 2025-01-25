@@ -52,11 +52,13 @@ fn main() -> ! {
         )
         .arg(
             Arg::new("listen")
+                .long("listen")
                 .required(true)
                 .help("path to server socket to bind"),
         )
         .arg(
             Arg::new("connect")
+                .long("connect")
                 .required(true)
                 .help("path to QEMU's server socket"),
         )
